@@ -51,9 +51,10 @@ function extractTotalPages($) {
     return maxPage;
 }
 
-// Cache for total pages and page data to maximize response speed
+// Cache for total pages, page data, and full year collections to maximize response speed
 const yearTotalPagesCache = new Map();
 const pageCache = new Map();
+const yearMoviesCache = new Map();
 const PAGE_CACHE_TTL = 10 * 60 * 1000; // 10 minutes cache
 
 /**
@@ -157,9 +158,20 @@ async function scrapeSinglePage(cleanYear, page = 1, bypassCache = false) {
 }
 
 /**
- * Loads all movies for a given year using a sequential for loop (only when searching)
+ * Loads all movies for a given year using a chunked for loop (only when searching)
  */
 async function scrapeAllMoviesUsingForLoop(cleanYear, bypassCache = false) {
+    if (!bypassCache && yearMoviesCache.has(cleanYear)) {
+        const cached = yearMoviesCache.get(cleanYear);
+        if (Date.now() - cached.timestamp < PAGE_CACHE_TTL) {
+            console.log(`[Scraper] Returning cached allMovies for year ${cleanYear} (${cached.allMovies.length} movies)`);
+            return {
+                totalPages: cached.totalPages,
+                allMovies: cached.allMovies
+            };
+        }
+    }
+
     console.log(`[Scraper] Searching across all pages for year ${cleanYear} using for loop...`);
 
     // Fetch Page 1 to detect totalPages
@@ -174,18 +186,35 @@ async function scrapeAllMoviesUsingForLoop(cleanYear, bypassCache = false) {
     const totalPages = page1.totalPages;
     const allMovies = [...page1.movies];
 
-    // Sequentially load remaining pages using a for loop
-    for (let p = 2; p <= totalPages; p++) {
-        try {
-            console.log(`[Scraper] For loop fetching page ${p} of ${totalPages} for year ${cleanYear}`);
-            const pageData = await scrapeSinglePage(cleanYear, p, bypassCache);
-            if (pageData.exists && pageData.movies.length > 0) {
-                allMovies.push(...pageData.movies);
+    // Load remaining pages using for-loop in fast batches of 4
+    const BATCH_SIZE = 4;
+    for (let p = 2; p <= totalPages; p += BATCH_SIZE) {
+        const batchPages = [];
+        for (let i = 0; i < BATCH_SIZE && (p + i) <= totalPages; i++) {
+            batchPages.push(p + i);
+        }
+
+        console.log(`[Scraper] For loop fetching pages ${batchPages.join(', ')} of ${totalPages} for year ${cleanYear}`);
+        const batchPromises = batchPages.map(page =>
+            scrapeSinglePage(cleanYear, page, bypassCache).catch(err => {
+                console.error(`[Scraper] Error in for loop at page ${page} for year ${cleanYear}:`, err.message);
+                return { exists: false, movies: [] };
+            })
+        );
+
+        const results = await Promise.all(batchPromises);
+        for (const res of results) {
+            if (res && res.exists && res.movies) {
+                allMovies.push(...res.movies);
             }
-        } catch (err) {
-            console.error(`[Scraper] Error in for loop at page ${p} for year ${cleanYear}:`, err.message);
         }
     }
+
+    yearMoviesCache.set(cleanYear, {
+        timestamp: Date.now(),
+        totalPages,
+        allMovies
+    });
 
     return {
         totalPages,
@@ -195,7 +224,7 @@ async function scrapeAllMoviesUsingForLoop(cleanYear, bypassCache = false) {
 
 /**
  * Scrapes movies for a given year.
- * - When searching (or all=true): loads all pages sequentially using a for loop.
+ * - When searching (or all=true): loads all pages using a for loop and filters matches.
  * - Default: fetches only the single requested page (page 1 by default) for high speed.
  */
 async function scrapeMoviesByYear(year, options = {}) {
@@ -272,14 +301,33 @@ async function scrapeMoviesByYear(year, options = {}) {
     };
 }
 
+/**
+ * Helper to safely extract query params from req.query and req.url
+ */
+function getRequestQueryParams(req) {
+    const q = { ...(req.query || {}) };
+    if (req.url && req.url.includes("?")) {
+        try {
+            const parsed = new URL(req.url, "http://localhost");
+            for (const [key, val] of parsed.searchParams.entries()) {
+                if (!(key in q) || q[key] === undefined || q[key] === "") {
+                    q[key] = val;
+                }
+            }
+        } catch (_) {}
+    }
+    return q;
+}
+
 // Route to fetch movies by year param, with pagination query ?page=X or search ?search=... or ?all=true
 app.get("/api/movies/year/:year", async (req, res) => {
     try {
+        const queryParams = getRequestQueryParams(req);
         const year = req.params.year;
-        const page = req.query.page || 1;
-        const search = req.query.search || req.query.q;
-        const all = req.query.all === "true" || req.query.all === true;
-        const refresh = req.query.refresh === "true" || req.query.refresh === true;
+        const page = queryParams.page || 1;
+        const search = queryParams.search || queryParams.q;
+        const all = queryParams.all === "true" || queryParams.all === true;
+        const refresh = queryParams.refresh === "true" || queryParams.refresh === true;
 
         const result = await scrapeMoviesByYear(year, { page, search, all, refresh });
         res.json(result);
@@ -296,10 +344,11 @@ app.get("/api/movies/year/:year", async (req, res) => {
 // Route to fetch movies with page number in path: /api/movies/year/:year/page/:page
 app.get("/api/movies/year/:year/page/:page", async (req, res) => {
     try {
+        const queryParams = getRequestQueryParams(req);
         const { year, page } = req.params;
-        const search = req.query.search || req.query.q;
-        const all = req.query.all === "true" || req.query.all === true;
-        const refresh = req.query.refresh === "true" || req.query.refresh === true;
+        const search = queryParams.search || queryParams.q;
+        const all = queryParams.all === "true" || queryParams.all === true;
+        const refresh = queryParams.refresh === "true" || queryParams.refresh === true;
 
         const result = await scrapeMoviesByYear(year, { page, search, all, refresh });
         res.json(result);
@@ -316,11 +365,12 @@ app.get("/api/movies/year/:year/page/:page", async (req, res) => {
 // Route to fetch movies via query parameter (?year=2026&page=1&search=...)
 app.get("/api/movies", async (req, res) => {
     try {
-        const year = req.query.year || "2026";
-        const page = req.query.page || 1;
-        const search = req.query.search || req.query.q;
-        const all = req.query.all === "true" || req.query.all === true;
-        const refresh = req.query.refresh === "true" || req.query.refresh === true;
+        const queryParams = getRequestQueryParams(req);
+        const year = queryParams.year || "2026";
+        const page = queryParams.page || 1;
+        const search = queryParams.search || queryParams.q;
+        const all = queryParams.all === "true" || queryParams.all === true;
+        const refresh = queryParams.refresh === "true" || queryParams.refresh === true;
 
         const result = await scrapeMoviesByYear(year, { page, search, all, refresh });
         res.json(result);
@@ -337,9 +387,10 @@ app.get("/api/movies", async (req, res) => {
 // Dedicated search endpoint (?q=keyword&year=2026)
 app.get("/api/movies/search", async (req, res) => {
     try {
-        const search = req.query.q || req.query.search || "";
-        const year = req.query.year || "2026";
-        const refresh = req.query.refresh === "true" || req.query.refresh === true;
+        const queryParams = getRequestQueryParams(req);
+        const search = queryParams.q || queryParams.search || "";
+        const year = queryParams.year || "2026";
+        const refresh = queryParams.refresh === "true" || queryParams.refresh === true;
 
         const result = await scrapeMoviesByYear(year, { search, all: true, refresh });
         res.json(result);

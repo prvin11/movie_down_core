@@ -719,6 +719,52 @@ app.post("/api/movies/download-links", async (req, res) => {
     }
 });
 
+// Image proxy endpoints to bypass CORS on Web & ensure reliable poster delivery
+app.get("/api/poster/:filename", async (req, res) => {
+    try {
+        const { filename } = req.params;
+        if (!filename || !/^[a-zA-Z0-9_\.\-]+$/.test(filename)) {
+            return res.status(400).send("Invalid filename");
+        }
+        const targetUrl = `${POSTER_BASE_URL}/uploads/posters/${filename}`;
+        const response = await axios.get(targetUrl, {
+            responseType: "arraybuffer",
+            headers: DEFAULT_HEADERS,
+            timeout: 10000,
+        });
+
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+        res.setHeader("Content-Type", response.headers["content-type"] || "image/jpeg");
+        res.setHeader("Cache-Control", "public, max-age=604800, s-maxage=604800");
+        return res.send(Buffer.from(response.data));
+    } catch (err) {
+        return res.status(404).send("Poster not found");
+    }
+});
+
+app.get("/api/poster-proxy", async (req, res) => {
+    try {
+        const targetUrl = req.query.url;
+        if (!targetUrl || !targetUrl.startsWith("http")) {
+            return res.status(400).send("Invalid URL");
+        }
+        const response = await axios.get(targetUrl, {
+            responseType: "arraybuffer",
+            headers: DEFAULT_HEADERS,
+            timeout: 10000,
+        });
+
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+        res.setHeader("Content-Type", response.headers["content-type"] || "image/jpeg");
+        res.setHeader("Cache-Control", "public, max-age=604800, s-maxage=604800");
+        return res.send(Buffer.from(response.data));
+    } catch (err) {
+        return res.status(404).send("Poster not found");
+    }
+});
+
 // Backwards-compatible route for 2022
 app.get("/api/movies/tamil-2022", async (req, res) => {
     try {

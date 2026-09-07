@@ -51,104 +51,237 @@ function extractTotalPages($) {
     return maxPage;
 }
 
+// Cache for total pages and page data to maximize response speed
+const yearTotalPagesCache = new Map();
+const pageCache = new Map();
+const PAGE_CACHE_TTL = 10 * 60 * 1000; // 10 minutes cache
+
 /**
- * Scrapes movies for a given year dynamically detecting total pages
+ * Checks if an item is a category navigation redirect rather than a movie
  */
-async function scrapeMoviesByYear(year) {
-    const cleanYear = String(year).trim();
-    if (!/^\d{4}$/.test(cleanYear)) {
-        throw new Error("Invalid year format. Must be a 4-digit year (e.g. 2026).");
+function isNavigationOrCategoryLink(title, slug, cleanYear) {
+    if (!title || !slug) return true;
+    const t = title.toLowerCase().trim();
+    const s = slug.toLowerCase().trim();
+
+    if (s.includes(`tamil-${cleanYear}-movies/`) || s === `/${cleanYear}/` || s === "/") {
+        return true;
+    }
+    // Filter category links like "(Tamil 2025 Movies)" or Tamil text category redirects
+    if (t.startsWith("(") && (t.includes("movies") || t.includes("திரைப்படங்களுக்கு"))) {
+        return true;
+    }
+    if (s.includes("-movies-tamil-movie") || (s.includes("tamil-") && s.includes("-movies/"))) {
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Helper to parse movie list items from cheerio parsed HTML
+ */
+function parseMoviesFromHtml($, cleanYear) {
+    const movies = [];
+    $(".f").each((_, element) => {
+        const link = $(element).find("a").first();
+        const title = link.text().trim();
+        const slug = link.attr("href");
+
+        if (title && slug && !isNavigationOrCategoryLink(title, slug, cleanYear)) {
+            movies.push({ title, slug });
+        }
+    });
+    return movies;
+}
+
+/**
+ * Scrapes a single page for a given year
+ */
+async function scrapeSinglePage(cleanYear, page = 1, bypassCache = false) {
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const cacheKey = `${cleanYear}_page_${pageNum}`;
+
+    if (!bypassCache && pageCache.has(cacheKey)) {
+        const cached = pageCache.get(cacheKey);
+        if (Date.now() - cached.timestamp < PAGE_CACHE_TTL) {
+            return cached.data;
+        }
     }
 
-    const page1Url = `${BASE_URL}/tamil-${cleanYear}-movies/`;
-    console.log(`[Scraper] Fetching page 1 for year ${cleanYear}: ${page1Url}`);
+    const pageUrl = pageNum === 1
+        ? `${BASE_URL}/tamil-${cleanYear}-movies/`
+        : `${BASE_URL}/tamil-${cleanYear}-movies/?page=${pageNum}`;
 
-    const response = await axios.get(page1Url, {
+    console.log(`[Scraper] Fetching page ${pageNum} for year ${cleanYear}: ${pageUrl}`);
+
+    const response = await axios.get(pageUrl, {
         timeout: 15000,
         headers: DEFAULT_HEADERS
     });
 
-    const $1 = cheerio.load(response.data);
-    const pageTitle = $1("title").text();
+    const $ = cheerio.load(response.data);
+    const pageTitle = $("title").text();
 
-    // Check if page actually exists for this year or fell back to home page
     if (!pageTitle.toLowerCase().includes(cleanYear) && !pageTitle.toLowerCase().includes("tamil")) {
         return {
-            success: false,
-            year: cleanYear,
+            exists: false,
+            page: pageNum,
             totalPages: 0,
-            total: 0,
             movies: [],
             message: `No movie catalogue found for year ${cleanYear}`
         };
     }
 
-    const totalPages = extractTotalPages($1);
-    console.log(`[Scraper] Year ${cleanYear}: detected ${totalPages} total pages from HTML`);
+    const detectedPages = extractTotalPages($);
+    if (detectedPages > 1) {
+        yearTotalPagesCache.set(cleanYear, detectedPages);
+    }
+    const cachedTotal = yearTotalPagesCache.get(cleanYear) || 1;
+    const totalPages = Math.max(detectedPages, cachedTotal, pageNum);
 
-    const allMovies = [];
+    const movies = parseMoviesFromHtml($, cleanYear);
 
-    // Parse movies from Page 1
-    $1(".f").each((_, element) => {
-        const link = $1(element).find("a").first();
-        const title = link.text().trim();
-        const slug = link.attr("href");
+    const resultData = {
+        exists: true,
+        page: pageNum,
+        totalPages,
+        movies
+    };
 
-        // Filter out navigation category redirects like "(Tamil 2026 Movies)"
-        if (title && slug && !slug.includes(`tamil-${cleanYear}-movies`)) {
-            allMovies.push({ title, slug });
-        }
+    pageCache.set(cacheKey, {
+        timestamp: Date.now(),
+        data: resultData
     });
 
-    // If there are more pages, fetch remaining pages concurrently in parallel
-    if (totalPages > 1) {
-        const pagePromises = [];
-        for (let page = 2; page <= totalPages; page++) {
-            const pageUrl = `${BASE_URL}/tamil-${cleanYear}-movies/?page=${page}`;
-            pagePromises.push(
-                axios.get(pageUrl, {
-                    timeout: 15000,
-                    headers: DEFAULT_HEADERS
-                }).then(res => {
-                    const $ = cheerio.load(res.data);
-                    const pageMovies = [];
-                    $(".f").each((_, element) => {
-                        const link = $(element).find("a").first();
-                        const title = link.text().trim();
-                        const slug = link.attr("href");
-                        if (title && slug && !slug.includes(`tamil-${cleanYear}-movies`)) {
-                            pageMovies.push({ title, slug });
-                        }
-                    });
-                    return { page, movies: pageMovies };
-                }).catch(err => {
-                    console.error(`[Scraper] Error fetching page ${page} for year ${cleanYear}:`, err.message);
-                    return { page, movies: [] };
-                })
+    return resultData;
+}
+
+/**
+ * Loads all movies for a given year using a sequential for loop (only when searching)
+ */
+async function scrapeAllMoviesUsingForLoop(cleanYear, bypassCache = false) {
+    console.log(`[Scraper] Searching across all pages for year ${cleanYear} using for loop...`);
+
+    // Fetch Page 1 to detect totalPages
+    const page1 = await scrapeSinglePage(cleanYear, 1, bypassCache);
+    if (!page1.exists) {
+        return {
+            totalPages: 0,
+            allMovies: []
+        };
+    }
+
+    const totalPages = page1.totalPages;
+    const allMovies = [...page1.movies];
+
+    // Sequentially load remaining pages using a for loop
+    for (let p = 2; p <= totalPages; p++) {
+        try {
+            console.log(`[Scraper] For loop fetching page ${p} of ${totalPages} for year ${cleanYear}`);
+            const pageData = await scrapeSinglePage(cleanYear, p, bypassCache);
+            if (pageData.exists && pageData.movies.length > 0) {
+                allMovies.push(...pageData.movies);
+            }
+        } catch (err) {
+            console.error(`[Scraper] Error in for loop at page ${p} for year ${cleanYear}:`, err.message);
+        }
+    }
+
+    return {
+        totalPages,
+        allMovies
+    };
+}
+
+/**
+ * Scrapes movies for a given year.
+ * - When searching (or all=true): loads all pages sequentially using a for loop.
+ * - Default: fetches only the single requested page (page 1 by default) for high speed.
+ */
+async function scrapeMoviesByYear(year, options = {}) {
+    const cleanYear = String(year).trim();
+    if (!/^\d{4}$/.test(cleanYear)) {
+        throw new Error("Invalid year format. Must be a 4-digit year (e.g. 2026).");
+    }
+
+    const {
+        page = 1,
+        search = null,
+        all = false,
+        refresh = false
+    } = options;
+
+    const hasSearch = typeof search === "string" && search.trim().length > 0;
+    const shouldLoadAll = all || hasSearch;
+
+    // Load all movies using for loop ONLY when searching or all=true
+    if (shouldLoadAll) {
+        const { totalPages, allMovies } = await scrapeAllMoviesUsingForLoop(cleanYear, refresh);
+        if (totalPages === 0 && allMovies.length === 0) {
+            return {
+                success: false,
+                year: cleanYear,
+                totalPages: 0,
+                total: 0,
+                movies: [],
+                message: `No movie catalogue found for year ${cleanYear}`
+            };
+        }
+
+        let filteredMovies = allMovies;
+        if (hasSearch) {
+            const query = search.trim().toLowerCase();
+            filteredMovies = allMovies.filter(m =>
+                m.title.toLowerCase().includes(query)
             );
         }
 
-        const pageResults = await Promise.all(pagePromises);
-        pageResults.sort((a, b) => a.page - b.page);
-        for (const res of pageResults) {
-            allMovies.push(...res.movies);
-        }
+        return {
+            success: true,
+            year: cleanYear,
+            search: hasSearch ? search.trim() : undefined,
+            totalPages,
+            total: filteredMovies.length,
+            movies: filteredMovies
+        };
+    }
+
+    // Default pagination: Fetch ONLY the requested page
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const pageResult = await scrapeSinglePage(cleanYear, pageNum, refresh);
+
+    if (!pageResult.exists) {
+        return {
+            success: false,
+            year: cleanYear,
+            page: pageNum,
+            totalPages: 0,
+            total: 0,
+            movies: [],
+            message: pageResult.message || `No movie catalogue found for year ${cleanYear}`
+        };
     }
 
     return {
         success: true,
         year: cleanYear,
-        totalPages,
-        total: allMovies.length,
-        movies: allMovies
+        page: pageResult.page,
+        totalPages: pageResult.totalPages,
+        total: pageResult.movies.length,
+        movies: pageResult.movies
     };
 }
 
-// Route to fetch movies by year param
+// Route to fetch movies by year param, with pagination query ?page=X or search ?search=... or ?all=true
 app.get("/api/movies/year/:year", async (req, res) => {
     try {
         const year = req.params.year;
-        const result = await scrapeMoviesByYear(year);
+        const page = req.query.page || 1;
+        const search = req.query.search || req.query.q;
+        const all = req.query.all === "true" || req.query.all === true;
+        const refresh = req.query.refresh === "true" || req.query.refresh === true;
+
+        const result = await scrapeMoviesByYear(year, { page, search, all, refresh });
         res.json(result);
     } catch (error) {
         console.error("Scraping error:", error.message);
@@ -160,17 +293,61 @@ app.get("/api/movies/year/:year", async (req, res) => {
     }
 });
 
-// Route to fetch movies via query parameter (?year=2026)
-app.get("/api/movies", async (req, res) => {
+// Route to fetch movies with page number in path: /api/movies/year/:year/page/:page
+app.get("/api/movies/year/:year/page/:page", async (req, res) => {
     try {
-        const year = req.query.year || "2026";
-        const result = await scrapeMoviesByYear(year);
+        const { year, page } = req.params;
+        const search = req.query.search || req.query.q;
+        const all = req.query.all === "true" || req.query.all === true;
+        const refresh = req.query.refresh === "true" || req.query.refresh === true;
+
+        const result = await scrapeMoviesByYear(year, { page, search, all, refresh });
         res.json(result);
     } catch (error) {
         console.error("Scraping error:", error.message);
         res.status(500).json({
             success: false,
             message: error.message || "Unable to fetch movie catalogue",
+            error: error.message
+        });
+    }
+});
+
+// Route to fetch movies via query parameter (?year=2026&page=1&search=...)
+app.get("/api/movies", async (req, res) => {
+    try {
+        const year = req.query.year || "2026";
+        const page = req.query.page || 1;
+        const search = req.query.search || req.query.q;
+        const all = req.query.all === "true" || req.query.all === true;
+        const refresh = req.query.refresh === "true" || req.query.refresh === true;
+
+        const result = await scrapeMoviesByYear(year, { page, search, all, refresh });
+        res.json(result);
+    } catch (error) {
+        console.error("Scraping error:", error.message);
+        res.status(500).json({
+            success: false,
+            message: error.message || "Unable to fetch movie catalogue",
+            error: error.message
+        });
+    }
+});
+
+// Dedicated search endpoint (?q=keyword&year=2026)
+app.get("/api/movies/search", async (req, res) => {
+    try {
+        const search = req.query.q || req.query.search || "";
+        const year = req.query.year || "2026";
+        const refresh = req.query.refresh === "true" || req.query.refresh === true;
+
+        const result = await scrapeMoviesByYear(year, { search, all: true, refresh });
+        res.json(result);
+    } catch (error) {
+        console.error("Search error:", error.message);
+        res.status(500).json({
+            success: false,
+            message: error.message || "Unable to search movies",
             error: error.message
         });
     }
@@ -450,13 +627,18 @@ app.post("/api/movies/download-links", async (req, res) => {
 // Backwards-compatible route for 2022
 app.get("/api/movies/tamil-2022", async (req, res) => {
     try {
-        const result = await scrapeMoviesByYear("2022");
+        const page = req.query.page || 1;
+        const search = req.query.search || req.query.q;
+        const all = req.query.all === "true" || req.query.all === true;
+        const refresh = req.query.refresh === "true" || req.query.refresh === true;
+
+        const result = await scrapeMoviesByYear("2022", { page, search, all, refresh });
         res.json(result);
     } catch (error) {
         console.error("Scraping error:", error.message);
         res.status(500).json({
             success: false,
-            message: "Unable to fetch movie catalogue",
+            message: error.message || "Unable to fetch movie catalogue",
             error: error.message
         });
     }

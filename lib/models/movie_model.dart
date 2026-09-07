@@ -57,6 +57,7 @@ class Movie {
 class MovieCatalogueResponse {
   final bool success;
   final String? year;
+  final int page;
   final int totalPages;
   final int total;
   final List<Movie> movies;
@@ -66,6 +67,7 @@ class MovieCatalogueResponse {
   const MovieCatalogueResponse({
     required this.success,
     this.year,
+    this.page = 1,
     this.totalPages = 0,
     this.total = 0,
     this.movies = const [],
@@ -92,6 +94,7 @@ class MovieCatalogueResponse {
     return MovieCatalogueResponse(
       success: json['success'] as bool? ?? false,
       year: json['year'] as String?,
+      page: json['page'] as int? ?? 1,
       totalPages: json['totalPages'] as int? ?? (parsedMovies.isNotEmpty ? 1 : 0),
       total: json['total'] as int? ?? parsedMovies.length,
       movies: parsedMovies,
@@ -104,6 +107,7 @@ class MovieCatalogueResponse {
     return {
       'success': success,
       'year': year,
+      'page': page,
       'totalPages': totalPages,
       'total': total,
       'movies': movies.map((m) => m.toJson()).toList(),

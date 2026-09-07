@@ -21,6 +21,7 @@ class MovieDownloaderView extends StatefulWidget {
 class _MovieDownloaderViewState extends State<MovieDownloaderView> {
   late final MovieController _controller;
   late final bool _ownsController;
+  final ScrollController _scrollController = ScrollController();
 
   @override
   void initState() {
@@ -31,7 +32,7 @@ class _MovieDownloaderViewState extends State<MovieDownloaderView> {
     if (widget.autoFetch) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
-          _controller.fetchMoviesForYear(_controller.selectedYear);
+          _controller.fetchMoviesForYear(_controller.selectedYear, page: 1);
         }
       });
     }
@@ -39,10 +40,22 @@ class _MovieDownloaderViewState extends State<MovieDownloaderView> {
 
   @override
   void dispose() {
+    _scrollController.dispose();
     if (_ownsController) {
       _controller.dispose();
     }
     super.dispose();
+  }
+
+  void _onPageSelected(int page) {
+    if (_scrollController.hasClients) {
+      _scrollController.animateTo(
+        0,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOut,
+      );
+    }
+    _controller.goToPage(page);
   }
 
   void _copyToClipboard(String text, String label) {
@@ -293,7 +306,11 @@ class _MovieDownloaderViewState extends State<MovieDownloaderView> {
                       ),
                     ),
                     child: Text(
-                      '${_controller.filteredCount}${_controller.hasSearchQuery ? '/${_controller.totalCount}' : ''} Movies (${_controller.totalPages} pgs)',
+                      _controller.hasSearchQuery
+                          ? '${_controller.filteredCount} found in ${_controller.selectedYear}'
+                          : (_controller.totalPages > 1
+                              ? 'Page ${_controller.currentPage}/${_controller.totalPages} (${_controller.filteredCount} items)'
+                              : '${_controller.filteredCount} Movies'),
                       style: const TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
@@ -311,6 +328,7 @@ class _MovieDownloaderViewState extends State<MovieDownloaderView> {
             icon: const Icon(Icons.refresh_rounded, color: Colors.white70),
             onPressed: () => _controller.fetchMoviesForYear(
               _controller.selectedYear,
+              page: _controller.currentPage,
               isRefresh: true,
             ),
           ),
@@ -330,6 +348,10 @@ class _MovieDownloaderViewState extends State<MovieDownloaderView> {
 
                 // --- Main Content Area ---
                 Expanded(child: _buildBody()),
+
+                // --- Bottom Pagination Bar (hidden during active search) ---
+                if (_controller.totalPages > 1 && !_controller.hasSearchQuery)
+                  _buildPaginationBar(),
               ],
             );
           },
@@ -493,6 +515,8 @@ class _MovieDownloaderViewState extends State<MovieDownloaderView> {
           child: TextField(
             controller: _controller.searchController,
             onChanged: (text) => _controller.filterMovies(text),
+            textInputAction: TextInputAction.search,
+            onSubmitted: (text) => _controller.filterMovies(text),
             style: const TextStyle(color: Colors.white, fontSize: 14),
             decoration: InputDecoration(
               hintText: 'Filter ${_controller.selectedYear} movies by title...',
@@ -507,6 +531,7 @@ class _MovieDownloaderViewState extends State<MovieDownloaderView> {
               ),
               suffixIcon: _controller.hasSearchQuery
                   ? IconButton(
+                      tooltip: 'Clear search',
                       icon: const Icon(
                         Icons.clear_rounded,
                         color: Color(0xFF94A3B8),
@@ -514,7 +539,21 @@ class _MovieDownloaderViewState extends State<MovieDownloaderView> {
                       ),
                       onPressed: () => _controller.clearSearch(),
                     )
-                  : null,
+                  : (_controller.isBackgroundLoading
+                      ? const Padding(
+                          padding: EdgeInsets.all(14.0),
+                          child: SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                Colors.indigoAccent,
+                              ),
+                            ),
+                          ),
+                        )
+                      : null),
               filled: true,
               fillColor: const Color(0xFF0F172A),
               contentPadding: const EdgeInsets.symmetric(
@@ -576,7 +615,9 @@ class _MovieDownloaderViewState extends State<MovieDownloaderView> {
             ),
             const SizedBox(height: 24),
             Text(
-              'Fetching Tamil ${_controller.selectedYear} Movies...',
+              _controller.hasSearchQuery
+                  ? 'Searching "${_controller.currentQuery}"...'
+                  : 'Fetching Tamil ${_controller.selectedYear} Movies...',
               textAlign: TextAlign.center,
               style: const TextStyle(
                 color: Colors.white,
@@ -586,7 +627,9 @@ class _MovieDownloaderViewState extends State<MovieDownloaderView> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Reading Page 1 HTML to detect total pages and fetching all movies...',
+              _controller.hasSearchQuery
+                  ? 'Scanning through movie pages using backend search...'
+                  : 'Loading Page ${_controller.currentPage} of ${_controller.totalPages > 0 ? _controller.totalPages : 1}...',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: Colors.blueGrey.shade300,
@@ -645,6 +688,7 @@ class _MovieDownloaderViewState extends State<MovieDownloaderView> {
                 ElevatedButton.icon(
                   onPressed: () => _controller.fetchMoviesForYear(
                     _controller.selectedYear,
+                    page: _controller.currentPage,
                     isRefresh: true,
                   ),
                   style: ElevatedButton.styleFrom(
@@ -710,7 +754,13 @@ class _MovieDownloaderViewState extends State<MovieDownloaderView> {
             if (isSearching) ...[
               const SizedBox(height: 16),
               OutlinedButton.icon(
-                onPressed: () => _controller.clearSearch(),
+                onPressed: () {
+                  _controller.clearSearch();
+                  _controller.fetchMoviesForYear(
+                    _controller.selectedYear,
+                    page: 1,
+                  );
+                },
                 style: OutlinedButton.styleFrom(
                   foregroundColor: Colors.indigoAccent,
                   side: const BorderSide(color: Colors.indigoAccent),
@@ -736,16 +786,205 @@ class _MovieDownloaderViewState extends State<MovieDownloaderView> {
           backgroundColor: const Color(0xFF1E293B),
           onRefresh: () => _controller.fetchMoviesForYear(
             _controller.selectedYear,
+            page: _controller.currentPage,
             isRefresh: true,
           ),
           child: ListView.separated(
+            controller: _scrollController,
+            physics: const AlwaysScrollableScrollPhysics(),
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
             itemCount: movies.length,
             separatorBuilder: (context, index) => const SizedBox(height: 10),
             itemBuilder: (context, index) {
               final movie = movies[index];
-              return _buildMovieCard(movie, index + 1);
+              final itemNumber = _controller.hasSearchQuery
+                  ? index + 1
+                  : (_controller.currentPage - 1) * 20 + index + 1;
+              return _buildMovieCard(movie, itemNumber);
             },
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPaginationBar() {
+    final total = _controller.totalPages;
+    final current = _controller.currentPage;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E293B),
+        border: Border(
+          top: BorderSide(
+            color: const Color(0xFF334155).withAlpha(150),
+            width: 1,
+          ),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withAlpha(50),
+            blurRadius: 10,
+            offset: const Offset(0, -3),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 700),
+          child: Row(
+            children: [
+              // Prev Button
+              InkWell(
+                onTap: current > 1 && !_controller.isLoading
+                    ? () => _onPageSelected(current - 1)
+                    : null,
+                borderRadius: BorderRadius.circular(8),
+                child: Container(
+                  height: 38,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  decoration: BoxDecoration(
+                    color: current > 1
+                        ? const Color(0xFF0F172A)
+                        : const Color(0xFF0F172A).withAlpha(80),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: current > 1
+                          ? const Color(0xFF334155)
+                          : const Color(0xFF1E293B),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.chevron_left_rounded,
+                        size: 18,
+                        color: current > 1 ? Colors.white : Colors.white24,
+                      ),
+                      const SizedBox(width: 2),
+                      Text(
+                        'Prev',
+                        style: TextStyle(
+                          color: current > 1 ? Colors.white : Colors.white24,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+
+              // Scrollable Page Numbers
+              Expanded(
+                child: SizedBox(
+                  height: 38,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    physics: const BouncingScrollPhysics(),
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    itemCount: total,
+                    separatorBuilder: (_, _) => const SizedBox(width: 6),
+                    itemBuilder: (context, idx) {
+                      final pageNum = idx + 1;
+                      final isSelected = pageNum == current;
+                      return InkWell(
+                        onTap: isSelected || _controller.isLoading
+                            ? null
+                            : () => _onPageSelected(pageNum),
+                        borderRadius: BorderRadius.circular(8),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          width: 38,
+                          height: 38,
+                          decoration: BoxDecoration(
+                            color: isSelected
+                                ? Colors.indigoAccent
+                                : const Color(0xFF0F172A),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: isSelected
+                                  ? Colors.indigoAccent
+                                  : const Color(0xFF334155),
+                              width: isSelected ? 1.5 : 1,
+                            ),
+                            boxShadow: isSelected
+                                ? [
+                                    BoxShadow(
+                                      color: Colors.indigoAccent.withAlpha(90),
+                                      blurRadius: 6,
+                                      offset: const Offset(0, 2),
+                                    )
+                                  ]
+                                : null,
+                          ),
+                          child: Center(
+                            child: Text(
+                              '$pageNum',
+                              style: TextStyle(
+                                color: isSelected
+                                    ? Colors.white
+                                    : const Color(0xFFCBD5E1),
+                                fontSize: 13,
+                                fontWeight: isSelected
+                                    ? FontWeight.bold
+                                    : FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+
+              // Next Button
+              InkWell(
+                onTap: current < total && !_controller.isLoading
+                    ? () => _onPageSelected(current + 1)
+                    : null,
+                borderRadius: BorderRadius.circular(8),
+                child: Container(
+                  height: 38,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  decoration: BoxDecoration(
+                    color: current < total
+                        ? const Color(0xFF0F172A)
+                        : const Color(0xFF0F172A).withAlpha(80),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: current < total
+                          ? const Color(0xFF334155)
+                          : const Color(0xFF1E293B),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'Next',
+                        style: TextStyle(
+                          color: current < total ? Colors.white : Colors.white24,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(width: 2),
+                      Icon(
+                        Icons.chevron_right_rounded,
+                        size: 18,
+                        color: current < total ? Colors.white : Colors.white24,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),

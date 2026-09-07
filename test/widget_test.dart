@@ -21,10 +21,11 @@ void main() {
     );
   });
 
-  test('MovieCatalogueResponse with dynamic totalPages', () {
+  test('MovieCatalogueResponse with dynamic totalPages and pagination', () {
     final response = MovieCatalogueResponse.fromJson({
       'success': true,
       'year': '2026',
+      'page': 2,
       'totalPages': 17,
       'total': 336,
       'movies': [
@@ -37,6 +38,7 @@ void main() {
 
     expect(response.success, isTrue);
     expect(response.year, '2026');
+    expect(response.page, 2);
     expect(response.totalPages, 17);
     expect(response.total, 336);
     expect(response.movies.length, 1);
@@ -77,6 +79,14 @@ void main() {
     controller.clearSearch();
     expect(controller.currentQuery, '');
     expect(controller.hasSearchQuery, isFalse);
+  });
+
+  test('MovieController pagination initial state test', () {
+    final controller = MovieController();
+    expect(controller.currentPage, 1);
+    expect(controller.totalPages, 0);
+    expect(controller.isBackgroundLoading, isFalse);
+    expect(controller.cachedYearMoviesCount, 0);
   });
 
   test('DownloadLinkItem and MovieDownloadLinksResponse JSON parsing', () {

@@ -79,6 +79,43 @@ function isNavigationOrCategoryLink(title, slug, cleanYear) {
 }
 
 /**
+ * Generates the poster image URL for a movie based on title and slug
+ * e.g. "Idhayam murali (2026)" -> "https://moviesdatamil.co/uploads/posters/idhayam-murali-2026.jpg"
+ */
+function generatePosterUrl(title, slug, cleanYear) {
+    if (title) {
+        let clean = title
+            .toLowerCase()
+            .replace(/[()]/g, "")
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-+|-+$/g, "");
+        if (clean) {
+            if (cleanYear && !clean.includes(cleanYear)) {
+                clean = `${clean}-${cleanYear}`;
+            }
+            return `${BASE_URL}/uploads/posters/${clean}.jpg`;
+        }
+    }
+
+    if (slug) {
+        let baseSlug = slug.trim().replace(/^\/+|\/+$/g, "");
+        baseSlug = baseSlug
+            .replace(/-tamil-(movie|web-series|dubbed-movie|hd-movie)$/i, "")
+            .replace(/-movie-download$/i, "")
+            .replace(/-moviesda$/i, "")
+            .replace(/-movie$/i, "")
+            .replace(/^tamil-\d{4}-movies\//i, "");
+
+        if (cleanYear && !baseSlug.includes(cleanYear)) {
+            baseSlug = `${baseSlug}-${cleanYear}`;
+        }
+        return `${BASE_URL}/uploads/posters/${baseSlug}.jpg`;
+    }
+
+    return null;
+}
+
+/**
  * Helper to parse movie list items from cheerio parsed HTML
  */
 function parseMoviesFromHtml($, cleanYear) {
@@ -89,7 +126,13 @@ function parseMoviesFromHtml($, cleanYear) {
         const slug = link.attr("href");
 
         if (title && slug && !isNavigationOrCategoryLink(title, slug, cleanYear)) {
-            movies.push({ title, slug });
+            const poster = generatePosterUrl(title, slug, cleanYear);
+            movies.push({
+                title,
+                slug,
+                poster,
+                posterUrl: poster
+            });
         }
     });
     return movies;

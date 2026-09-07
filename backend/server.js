@@ -1,7 +1,8 @@
-const express = require("express");
-const cors = require("cors");
-const axios = require("axios");
-const cheerio = require("cheerio");
+import express from "express";
+import cors from "cors";
+import axios from "axios";
+import * as cheerio from "cheerio";
+import { httpServerHandler } from "cloudflare:node";
 
 const app = express();
 
@@ -461,7 +462,9 @@ app.get("/api/movies/tamil-2022", async (req, res) => {
     }
 });
 
-app.listen(3000, () => {
-    console.log("Server running on http://localhost:3000");
+app.listen(3000);
+
+export default httpServerHandler({
+    port: 3000
 });
 

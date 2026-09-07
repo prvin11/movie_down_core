@@ -10,6 +10,7 @@ app.use(cors());
 app.use(express.json());
 
 const BASE_URL = "https://moviesdatamil.co";
+const POSTER_BASE_URL = "https://moviezda.com";
 
 const DEFAULT_HEADERS = {
     "User-Agent":
@@ -80,7 +81,7 @@ function isNavigationOrCategoryLink(title, slug, cleanYear) {
 
 /**
  * Generates the poster image URL for a movie based on title and slug
- * e.g. "Idhayam murali (2026)" -> "https://moviesdatamil.co/uploads/posters/idhayam-murali-2026.jpg"
+ * e.g. "Idhayam murali (2026)" -> "https://moviezda.com/uploads/posters/idhayam-murali-2026.jpg"
  */
 function generatePosterUrl(title, slug, cleanYear) {
     if (title) {
@@ -93,7 +94,7 @@ function generatePosterUrl(title, slug, cleanYear) {
             if (cleanYear && !clean.includes(cleanYear)) {
                 clean = `${clean}-${cleanYear}`;
             }
-            return `${BASE_URL}/uploads/posters/${clean}.jpg`;
+            return `${POSTER_BASE_URL}/uploads/posters/${clean}.jpg`;
         }
     }
 
@@ -109,7 +110,7 @@ function generatePosterUrl(title, slug, cleanYear) {
         if (cleanYear && !baseSlug.includes(cleanYear)) {
             baseSlug = `${baseSlug}-${cleanYear}`;
         }
-        return `${BASE_URL}/uploads/posters/${baseSlug}.jpg`;
+        return `${POSTER_BASE_URL}/uploads/posters/${baseSlug}.jpg`;
     }
 
     return null;
